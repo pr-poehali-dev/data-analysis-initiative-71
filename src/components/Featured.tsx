@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 
 const POINTS = [200, 400, 600, 800, 1000];
+const OPTION_LABELS = ["а", "б", "в", "г"];
 
 const categories = [
   {
@@ -61,7 +62,33 @@ const categories = [
   },
 ];
 
+// Все термины по категориям для генерации неправильных вариантов
+const allTermsByCat: Record<string, string[]> = Object.fromEntries(
+  categories.map((c) => [c.id, c.questions.map((q) => q.term)])
+);
+
+function shuffle<T>(arr: T[], seed: number): T[] {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = (seed * (i + 7) * 31337) % (i + 1);
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function buildOptions(catId: string, correctTerm: string, qIdx: number): string[] {
+  const pool = allTermsByCat[catId].filter((t) => t !== correctTerm);
+  const wrong = shuffle(pool, qIdx + 1).slice(0, 3);
+  const opts = shuffle([correctTerm, ...wrong], qIdx + 13);
+  return opts;
+}
+
 type Screen = "register" | "game";
+
+interface QuestionState {
+  selected: string | null;
+  awarded: boolean;
+}
 
 export default function Featured() {
   const [screen, setScreen] = useState<Screen>("register");
@@ -69,26 +96,40 @@ export default function Featured() {
   const [teams, setTeams] = useState<string[]>([]);
   const [scores, setScores] = useState<number[]>([0, 0, 0, 0]);
   const [activeCategory, setActiveCategory] = useState(categories[0].id);
-  const [revealed, setRevealed] = useState<Record<string, boolean[]>>(
-    Object.fromEntries(categories.map((c) => [c.id, c.questions.map(() => false)]))
-  );
+
+  // state: {catId}-{qIdx} -> QuestionState
+  const [qStates, setQStates] = useState<Record<string, QuestionState>>({});
+
+  // Precompute options for all questions
+  const optionsMap = useMemo(() => {
+    const map: Record<string, string[]> = {};
+    categories.forEach((cat) => {
+      cat.questions.forEach((q, i) => {
+        map[`${cat.id}-${i}`] = buildOptions(cat.id, q.term, i);
+      });
+    });
+    return map;
+  }, []);
 
   const startGame = () => {
     const named = teamInputs.map((t, i) => t.trim() || `Группа ${i + 1}`);
     setTeams(named);
     setScores([0, 0, 0, 0]);
+    setQStates({});
     setScreen("game");
   };
 
-  const toggle = (catId: string, i: number) => {
-    setRevealed((prev) => ({
-      ...prev,
-      [catId]: prev[catId].map((v, idx) => (idx === i ? !v : v)),
-    }));
+  const selectOption = (catId: string, qIdx: number, option: string) => {
+    const key = `${catId}-${qIdx}`;
+    if (qStates[key]?.selected) return; // уже выбрано
+    setQStates((prev) => ({ ...prev, [key]: { selected: option, awarded: false } }));
   };
 
-  const addPoints = (teamIdx: number, pts: number) => {
+  const awardTeam = (catId: string, qIdx: number, teamIdx: number, pts: number) => {
+    const key = `${catId}-${qIdx}`;
+    if (qStates[key]?.awarded) return;
     setScores((prev) => prev.map((s, i) => (i === teamIdx ? s + pts : s)));
+    setQStates((prev) => ({ ...prev, [key]: { ...prev[key], awarded: true } }));
   };
 
   const currentCat = categories.find((c) => c.id === activeCategory)!;
@@ -103,15 +144,13 @@ export default function Featured() {
             Назовите свои группы
           </h2>
           <p className="text-neutral-500 text-lg mb-12">
-            Введите название каждой группы — или оставьте поле пустым, и мы назовём их автоматически.
+            Введите название каждой группы — или оставьте поле пустым, мы назовём их автоматически.
           </p>
 
           <div className="flex flex-col gap-4 mb-12">
             {teamInputs.map((val, i) => (
               <div key={i} className="flex items-center gap-4">
-                <span className="text-neutral-400 text-sm uppercase tracking-widest w-8 shrink-0">
-                  {i + 1}
-                </span>
+                <span className="text-neutral-400 text-sm uppercase tracking-widest w-8 shrink-0">{i + 1}</span>
                 <input
                   type="text"
                   value={val}
@@ -182,12 +221,22 @@ export default function Featured() {
         <div className="flex flex-col gap-4">
           {currentCat.questions.map((q, i) => {
             const pts = POINTS[Math.min(i, POINTS.length - 1)];
-            const isOpen = revealed[activeCategory][i];
+            const key = `${activeCategory}-${i}`;
+            const state = qStates[key];
+            const options = optionsMap[key];
+            const isCorrect = state?.selected === q.term;
+            const isWrong = state?.selected && state.selected !== q.term;
+
             return (
               <div
-                key={`${activeCategory}-${i}`}
-                className="border border-neutral-200 p-6 md:p-8 hover:border-neutral-400 transition-colors duration-300"
+                key={key}
+                className={`border p-6 md:p-8 transition-colors duration-300 ${
+                  isCorrect
+                    ? "border-black bg-neutral-50"
+                    : "border-neutral-200 hover:border-neutral-400"
+                }`}
               >
+                {/* Заголовок */}
                 <div className="flex items-start justify-between mb-4 gap-4">
                   <p className="text-xs uppercase tracking-widest text-neutral-400">
                     {currentCat.label} · Задание {i + 1}
@@ -197,46 +246,67 @@ export default function Featured() {
                   </span>
                 </div>
 
+                {/* Определение */}
                 <p className="text-lg md:text-xl text-neutral-800 mb-6 leading-relaxed">
                   «{q.definition}»
                 </p>
 
-                <div className="flex items-center justify-between flex-wrap gap-4 mb-5">
-                  <p
-                    className={`font-mono text-xl md:text-2xl font-bold tracking-widest transition-all duration-300 ${
-                      isOpen ? "text-neutral-900" : "text-neutral-200 select-none"
-                    }`}
-                  >
-                    {isOpen
-                      ? q.term
-                      : "_ ".repeat(q.term.replace(/[\s-]/g, "").length).trim()}
-                  </p>
-                  <button
-                    onClick={() => toggle(activeCategory, i)}
-                    className="bg-black text-white px-5 py-2 text-sm uppercase tracking-wide hover:bg-neutral-700 transition-colors duration-300 cursor-pointer"
-                  >
-                    {isOpen ? "Скрыть" : "Показать ответ"}
-                  </button>
+                {/* Варианты ответов */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-5">
+                  {options.map((opt, oi) => {
+                    const isThis = state?.selected === opt;
+                    const isRight = opt === q.term;
+                    let style = "border-neutral-200 bg-white text-neutral-800 hover:border-black";
+                    if (state?.selected) {
+                      if (isRight) style = "border-black bg-black text-white";
+                      else if (isThis && !isRight) style = "border-red-400 bg-red-50 text-red-700";
+                      else style = "border-neutral-100 bg-neutral-50 text-neutral-400";
+                    }
+                    return (
+                      <button
+                        key={oi}
+                        onClick={() => selectOption(activeCategory, i, opt)}
+                        disabled={!!state?.selected}
+                        className={`flex items-center gap-3 border px-4 py-3 text-left text-sm transition-all duration-200 cursor-pointer disabled:cursor-default ${style}`}
+                      >
+                        <span className="font-bold uppercase opacity-60 shrink-0 w-4">{OPTION_LABELS[oi]})</span>
+                        <span className="font-medium">{opt}</span>
+                      </button>
+                    );
+                  })}
                 </div>
 
-                {/* Начислить баллы */}
-                {isOpen && (
-                  <div className="border-t border-neutral-100 pt-4">
-                    <p className="text-xs uppercase tracking-widest text-neutral-400 mb-3">
-                      Начислить {pts} баллов команде:
+                {/* После правильного — начислить баллы */}
+                {isCorrect && (
+                  <div className={`border-t border-neutral-200 pt-5 transition-all duration-300`}>
+                    <p className="text-xs uppercase tracking-widest text-neutral-500 mb-3">
+                      {state?.awarded ? "Баллы начислены" : `Начислить ${pts} баллов:`}
                     </p>
-                    <div className="flex flex-wrap gap-2">
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
                       {teams.map((name, ti) => (
                         <button
                           key={ti}
-                          onClick={() => addPoints(ti, pts)}
-                          className="border border-neutral-300 px-4 py-2 text-sm text-neutral-700 hover:bg-black hover:text-white hover:border-black transition-all duration-200 cursor-pointer"
+                          onClick={() => awardTeam(activeCategory, i, ti, pts)}
+                          disabled={state?.awarded}
+                          className={`flex flex-col items-center border px-3 py-3 text-sm transition-all duration-200 cursor-pointer disabled:cursor-default ${
+                            state?.awarded
+                              ? "border-neutral-100 bg-neutral-50 text-neutral-400"
+                              : "border-neutral-300 hover:bg-black hover:text-white hover:border-black"
+                          }`}
                         >
-                          {name}
+                          <span className="font-semibold truncate w-full text-center text-xs uppercase tracking-wide">{name}</span>
+                          <span className="font-mono font-bold text-lg mt-1">{scores[ti]}</span>
                         </button>
                       ))}
                     </div>
                   </div>
+                )}
+
+                {/* Неправильный ответ */}
+                {isWrong && (
+                  <p className="text-sm text-red-500 mt-2">
+                    Неверно. Правильный ответ: <strong>{q.term}</strong>
+                  </p>
                 )}
               </div>
             );
